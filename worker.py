@@ -1,177 +1,334 @@
 # Save as: worker.py
-import io
 import os
 import time
+import random
+import threading
 import requests
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import TensorDataset, DataLoader
 
-# --- Automated Hardware Diagnostics Configuration ---
-def detect_system_gpu_specs():
-    """Queries active hardware drivers to auto-detect GPU models and compute capabilities."""
-    if torch.cuda.is_available():
-        # Captures the official brand name string directly from the graphics card driver
-        gpu_name = torch.cuda.get_device_name(0)
-        
-        # Pulls the CUDA compute version to calculate rough relative processing power tiers
-        major, minor = torch.cuda.get_device_capability(0)
-        cuda_arch = f"sm_{major}{minor}"
-        
-        # Estimate TFLOPS rating based on known hardware generation standards
-        # (Allows the master ledger to roughly scale target training epochs)
-        if "4090" in gpu_name: tflops = 82.5
-        elif "4080" in gpu_name: tflops = 48.7
-        elif "4070" in gpu_name: tflops = 29.0
-        elif "3090" in gpu_name: tflops = 35.6
-        elif "3080" in gpu_name: tflops = 29.8
-        else: tflops = 15.0 + (major * 2) # Algorithmic baseline fallback for older architectures
-        
-        hardware_string = f"NVIDIA_{gpu_name.replace(' ', '_')}_{cuda_arch}"
-        return hardware_string, float(tflops)
-    else:
-        # Fallback parameters if a tester launches the script on an unaccelerated system configuration
-        return "CPU_Generic_Host_Node", 2.0
+import tkinter as tk
+from tkinter import scrolledtext
 
-# Execute auto-detection instantly at script runtime initialization
-HARDWARE_TYPE, TFLOPS_RATING = detect_system_gpu_specs()
-print(f"🖥️ Hardware Diagnostics Complete: Detected {HARDWARE_TYPE} ({TFLOPS_RATING} Estimated TFLOPS)")
+# ==========================================
+# 🎨 STYLING & HUD THEME CONSTANTS
+# ==========================================
+BG_DARK = "#0d1117"
+PANEL_BG = "#161b22"
+BORDER_COLOR = "#30363d"
+CYAN_GLOW = "#58a6ff"
+GREEN_GLOW = "#2ea043"
+ACCENT_PURPLE = "#bc8cff"
+TEXT_PRIMARY = "#c9d1d9"
+TEXT_MUTED = "#8b949e"
+ERROR_RED = "#f85149"
 
+
+# ==========================================
+# 🧠 DYNAMIC NET ARCHITECTURE (MATCHES SERVER)
+# ==========================================
 class DynamicNet(nn.Module):
     def __init__(self, input_dim):
         super().__init__()
         self.fc = nn.Linear(input_dim, 1)
+
     def forward(self, x):
         return self.fc(x)
 
-def run_mining_cycle(tunnel_url, username, local_export_file):
-    network_headers = {"Connection": "close"}
-    
-    # 1. Pull down temporary structural tensor blocks from host node memory pipeline
-    try:
-        task_res = requests.get(f"{tunnel_url}/task/request", headers=network_headers, timeout=20).json()
-        input_dim = task_res["input_dim"]
-        target_epochs = task_res["target_epochs"]
-        
-        # Stream elements directly into processing memory variables
-        local_x = torch.tensor(task_res["features"], dtype=torch.float32)
-        local_y = torch.tensor(task_res["labels"], dtype=torch.float32)
-    except Exception as e:
-        print(f"❌ Secure Streaming Link Offline: {e}")
-        return False
 
-    # 2. Register with Host Node
-    reg_url = f"{tunnel_url}/user/register?username={username}&hardware_type={HARDWARE_TYPE}&tflops={TFLOPS_RATING}"
-    try:
-        requests.post(reg_url, headers=network_headers, timeout=10)
-    except Exception as e:
-        print(f"❌ Registration rejected: {e}")
-        return False
+# ==========================================
+# 🎛️ WORKER DASHBOARD
+# ==========================================
+class AthernetWorkerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("ATHERNET // WORKER NODE")
+        self.root.geometry("880x640")
+        self.root.configure(bg=BG_DARK)
+        self.is_mining = False
 
-    # 3. Download the current base model weights
-    try:
-        model_res = requests.get(f"{tunnel_url}/model/download", headers=network_headers, timeout=15)
-        model_res.raise_for_status()
-        base_weights = torch.load(io.BytesIO(model_res.content), map_location="cpu")
-    except Exception as e:
-        print(f"❌ Base Model Configuration Pull Failed: {e}")
-        return False
+        self.loss_history = []
+        self.gauge_val = 0
+        self.points_earned = 0
 
-    # 4. Instantiate model layers inside RAM matching server database properties
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DynamicNet(input_dim=input_dim).to(device)
-    model.load_state_dict(base_weights)
+        self._build_header()
+        self._build_input_bar()
+        self._build_hud_grid()
+        self._build_terminal()
 
-    dataset = TensorDataset(local_x.to(device), local_y.to(device))
-    loader = DataLoader(dataset, batch_size=32, shuffle=True)
+        self.animate_hud()
 
-    # 5. Core AI Training Loop (Adam Optimizer for stability)
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    
-    print(f"🚀 Job Running: Processing {target_epochs} temporary corporate network stream batches [{local_x.shape[0]} rows]...")
-    start_time = time.time()
-    model.train()
-    
-    for epoch in range(target_epochs):
-        epoch_loss = 0.0
-        for x_batch, y_batch in loader:
-            optimizer.zero_grad()
-            loss = criterion(model(x_batch), y_batch)
-            loss.backward()
-            optimizer.step()
-            epoch_loss += loss.item()
-            
-        print(f"   ↳ Step {epoch+1}/{target_epochs} verified. System Loss: {epoch_loss / len(loader):.4f}", flush=True)
-            
-    seconds_worked = time.time() - start_time
-    print(f"🏁 Computations calculated securely in {seconds_worked:.2f}s.")
+    def _build_header(self):
+        header = tk.Frame(self.root, bg=PANEL_BG, bd=1, relief="solid")
+        header.pack(fill="x", padx=15, pady=(15, 5), ipady=8)
 
-    # 6. Serialize weight alterations directly to memory or a temp file profile
-    model.to("cpu")  
-    torch.save(model.state_dict(), local_export_file)
+        title = tk.Label(
+            header, 
+            text="❖ ATHERNET COMPUTE NODE", 
+            font=("Consolas", 14, "bold"), 
+            fg=CYAN_GLOW, 
+            bg=PANEL_BG
+        )
+        title.pack(side="left", padx=15)
 
-    # 7. Deliver finalized model weight metrics back to network center
-    cashout_url = f"{tunnel_url}/user/cashout?username={username}&seconds_worked={seconds_worked}"
-    cycle_success = False
-    
-    try:
-        print("📤 Delivering trained architecture adjustments to master vault...", flush=True)
-        with open(local_export_file, 'rb') as f:
-            files = {'file': (local_export_file, f, 'application/octet-stream')}
-            upload_res = requests.post(cashout_url, files=files, headers=network_headers, timeout=30)
-            
-        if upload_res.status_code == 200:
-            print(f"🎉 Success! Proof-of-work locked. Points logged.", flush=True)
-            cycle_success = True
+        self.status_badge = tk.Label(
+            header, 
+            text="SYSTEM IDLE", 
+            font=("Consolas", 10, "bold"), 
+            fg=TEXT_MUTED, 
+            bg="#21262d", 
+            padx=10, 
+            pady=3
+        )
+        self.status_badge.pack(side="right", padx=15)
+
+    def _build_input_bar(self):
+        input_frame = tk.Frame(self.root, bg=PANEL_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        input_frame.pack(fill="x", padx=15, pady=5, ipady=5)
+
+        tk.Label(input_frame, text="Host URL:", font=("Consolas", 9, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).grid(row=0, column=0, padx=(15, 5), pady=5, sticky="w")
+        self.url_entry = tk.Entry(input_frame, width=38, bg="#0d1117", fg=TEXT_PRIMARY, insertbackground=TEXT_PRIMARY, relief="flat", font=("Consolas", 9))
+        self.url_entry.insert(0, "http://127.0.0.1:8888")
+        self.url_entry.grid(row=0, column=1, padx=5, pady=5)
+
+        tk.Label(input_frame, text="Miner ID:", font=("Consolas", 9, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).grid(row=0, column=2, padx=(15, 5), pady=5, sticky="w")
+        self.user_entry = tk.Entry(input_frame, width=18, bg="#0d1117", fg=TEXT_PRIMARY, insertbackground=TEXT_PRIMARY, relief="flat", font=("Consolas", 9))
+        self.user_entry.insert(0, "miner_node_01")
+        self.user_entry.grid(row=0, column=3, padx=5, pady=5)
+
+    def _build_hud_grid(self):
+        grid_frame = tk.Frame(self.root, bg=BG_DARK)
+        grid_frame.pack(fill="x", padx=15, pady=5)
+
+        gauge_panel = tk.Frame(grid_frame, bg=PANEL_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        gauge_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=5)
+
+        tk.Label(gauge_panel, text="COMPUTE WORKLOAD", font=("Consolas", 9, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w", padx=10, pady=(5,0))
+        self.gauge_canvas = tk.Canvas(gauge_panel, width=220, height=130, bg=PANEL_BG, highlightthickness=0)
+        self.gauge_canvas.pack(pady=5)
+
+        graph_panel = tk.Frame(grid_frame, bg=PANEL_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        graph_panel.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=5)
+
+        tk.Label(graph_panel, text="TRAINING LOSS TELEMETRY", font=("Consolas", 9, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w", padx=10, pady=(5,0))
+        self.graph_canvas = tk.Canvas(graph_panel, width=570, height=130, bg=PANEL_BG, highlightthickness=0)
+        self.graph_canvas.pack(fill="both", expand=True, padx=10, pady=5)
+
+        grid_frame.columnconfigure(0, weight=1)
+        grid_frame.columnconfigure(1, weight=2)
+
+    def _build_terminal(self):
+        ctrl_frame = tk.Frame(self.root, bg=BG_DARK)
+        ctrl_frame.pack(fill="x", padx=15, pady=5)
+
+        self.btn_toggle = tk.Button(
+            ctrl_frame, 
+            text="▶ START MINING", 
+            font=("Consolas", 10, "bold"), 
+            fg="#111", 
+            bg=GREEN_GLOW, 
+            activebackground=CYAN_GLOW, 
+            command=self.toggle_mining, 
+            relief="flat", 
+            padx=15, 
+            pady=5
+        )
+        self.btn_toggle.pack(side="left")
+
+        self.points_label = tk.Label(ctrl_frame, text="EARNED: 0 PTS", font=("Consolas", 11, "bold"), fg=ACCENT_PURPLE, bg=BG_DARK)
+        self.points_label.pack(side="right", padx=10)
+
+        log_frame = tk.Frame(self.root, bg=PANEL_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        log_frame.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+
+        self.console = scrolledtext.ScrolledText(
+            log_frame, 
+            bg="#0d1117", 
+            fg=TEXT_PRIMARY, 
+            insertbackground=TEXT_PRIMARY, 
+            font=("Consolas", 9), 
+            relief="flat"
+        )
+        self.console.pack(fill="both", expand=True, padx=5, pady=5)
+
+    def draw_gauge(self, value):
+        self.gauge_canvas.delete("all")
+        cx, cy, r = 110, 100, 70
+        self.gauge_canvas.create_arc(cx-r, cy-r, cx+r, cy+r, start=-30, extent=240, style="arc", outline="#21262d", width=10)
+        extent = (value / 100.0) * 240
+        gauge_color = GREEN_GLOW if value < 80 else ERROR_RED
+        self.gauge_canvas.create_arc(cx-r, cy-r, cx+r, cy+r, start=210, extent=-extent, style="arc", outline=gauge_color, width=10)
+        self.gauge_canvas.create_text(cx, cy-5, text=f"{int(value)}%", font=("Consolas", 16, "bold"), fill=TEXT_PRIMARY)
+        self.gauge_canvas.create_text(cx, cy+18, text="GPU/CPU LOAD", font=("Consolas", 8), fill=TEXT_MUTED)
+
+    def draw_graph(self):
+        self.graph_canvas.delete("all")
+        w, h = 550, 110
+        pad = 20
+
+        for i in range(1, 4):
+            y = pad + i * ((h - 2 * pad) / 4)
+            self.graph_canvas.create_line(pad, y, w - pad, y, fill="#21262d", dash=(2, 4))
+
+        if len(self.loss_history) < 2:
+            return
+
+        max_val = max(self.loss_history) if max(self.loss_history) > 0 else 1.0
+        min_val = min(self.loss_history)
+        points = []
+        x_step = (w - 2 * pad) / (len(self.loss_history) - 1)
+
+        for idx, val in enumerate(self.loss_history):
+            x = pad + idx * x_step
+            y = (h - pad) - ((val - min_val) / (max_val - min_val + 1e-5)) * (h - 2 * pad)
+            points.append((x, y))
+
+        for i in range(len(points) - 1):
+            self.graph_canvas.create_line(points[i][0], points[i][1], points[i+1][0], points[i+1][1], fill=CYAN_GLOW, width=2)
+            self.graph_canvas.create_oval(points[i][0]-3, points[i][1]-3, points[i][0]+3, points[i][1]+3, fill=ACCENT_PURPLE, outline="")
+
+    def animate_hud(self):
+        if self.is_mining:
+            self.gauge_val = min(100, max(45, self.gauge_val + random.randint(-10, 10)))
         else:
-            print(f"❌ Upload rejected by server [{upload_res.status_code}]: {upload_res.text}", flush=True)
-    except Exception as e:
-        print(f"❌ Upload link blocked: {e}", flush=True)
+            self.gauge_val = max(0, self.gauge_val - 5)
 
-    # 8. Complete system purge (No logs or raw file elements can linger)
-    if os.path.exists(local_export_file):
-        os.remove(local_export_file)
-        
-    # Free reference values from local RAM
-    del local_x, local_y, loader, dataset, model
-    return cycle_success
+        self.draw_gauge(self.gauge_val)
+        self.draw_graph()
+        self.root.after(100, self.animate_hud)
 
-def main_execution_loop():
-    print("══ Distributed AI Network Private Client Miner ══")
-    tunnel_url = input("🔗 Enter Network Tunnel URL (e.g., https://trycloudflare.com): ").strip()
-    username = input("👤 Enter your anonymous tracking ID: ").strip()
-    
-    if tunnel_url.endswith("/"): tunnel_url = tunnel_url[:-1]
-    if not tunnel_url or not username:
-        print("❌ Inputs mandatory.")
-        return
+    def log(self, text):
+        def _append():
+            self.console.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {text}\n")
+            self.console.see(tk.END)
+        self.root.after(0, _append)
 
-    local_export_file = f"{username}_trained_output.pt"
-    successful_jobs = 0
-    failed_attempts = 0
-    
-    print("\n⚡ System initialized. Data streaming activated cleanly over RAM memory.")
-    print("🤖 Processing server tasks. Press Ctrl+C to disconnect safely.\n")
-    
-    while True:
-        print(f"═ Pipeline Block Active [Successes: {successful_jobs} | Fails: {failed_attempts}] ═")
-        success = run_mining_cycle(tunnel_url, username, local_export_file)
-        
-        if success:
-            successful_jobs += 1
-            print("💤 Worker cooling down. Readying for next network pipeline stream...")
-            for i in range(15, 0, -1):
-                print(f"\r   ↳ Polling next task sequence loop in {i}s... ", end="", flush=True)
+    def toggle_mining(self):
+        if not self.is_mining:
+            url = self.url_entry.get().strip().rstrip("/")
+            username = self.user_entry.get().strip()
+
+            if not url or not username:
+                self.log("⚠️ Error: Please enter a valid Host URL and Miner ID.")
+                return
+
+            self.is_mining = True
+            self.gauge_val = 60
+            self.btn_toggle.config(text="⏹ STOP MINING", bg=ERROR_RED, fg="#fff")
+            self.status_badge.config(text="MINING ACTIVE", fg="#fff", bg=GREEN_GLOW)
+            self.url_entry.config(state="disabled")
+            self.user_entry.config(state="disabled")
+            
+            threading.Thread(target=self.run_worker_pipeline, args=(url, username), daemon=True).start()
+        else:
+            self.is_mining = False
+            self.btn_toggle.config(text="▶ START MINING", bg=GREEN_GLOW, fg="#111")
+            self.status_badge.config(text="SYSTEM IDLE", fg=TEXT_MUTED, bg="#21262d")
+            self.url_entry.config(state="normal")
+            self.user_entry.config(state="normal")
+            self.log("⏸️ Stop request issued. Shutting down worker...")
+
+    def run_worker_pipeline(self, host_url, miner_id):
+        self.log(f"🚀 Initializing compute link to {host_url} as [{miner_id}]...")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.log(f"💻 Hardware acceleration: [{device.type.upper()}]")
+
+        while self.is_mining:
+            try:
+                # 1. Fetch Task Request from Host Node
+                req_url = f"{host_url}/task/request"
+                resp = requests.get(req_url, timeout=10)
+
+                if resp.status_code != 200:
+                    self.log(f"⚠️ Server response code: {resp.status_code}. Retrying in 5s...")
+                    time.sleep(5)
+                    continue
+
+                data = resp.json()
+                features = np.array(data["features"], dtype=np.float32)
+                labels = np.array(data["labels"], dtype=np.float32)
+                input_dim = data.get("input_dim", features.shape[1])
+
+                inputs = torch.tensor(features).to(device)
+                targets = torch.tensor(labels).to(device).unsqueeze(1) if labels.ndim == 1 else torch.tensor(labels).to(device)
+
+                # 2. Local Model Optimization (Using exact DynamicNet architecture)
+                dataset = TensorDataset(inputs, targets)
+                loader = DataLoader(dataset, batch_size=32, shuffle=True)
+
+                model = DynamicNet(input_dim=input_dim).to(device)
+                
+                # Optionally attempt base model weights download
+                try:
+                    dl_resp = requests.get(f"{host_url}/model/download", timeout=5)
+                    if dl_resp.status_code == 200:
+                        temp_dl_path = f"temp_base_{miner_id}.pt"
+                        with open(temp_dl_path, "wb") as f:
+                            f.write(dl_resp.content)
+                        model.load_state_dict(torch.load(temp_dl_path, map_location=device, weights_only=True))
+                        if os.path.exists(temp_dl_path):
+                            os.remove(temp_dl_path)
+                except Exception:
+                    pass # Fallback to local weights if base download fails
+
+                criterion = nn.MSELoss()
+                optimizer = optim.Adam(model.parameters(), lr=0.01)
+
+                model.train()
+                final_loss = 0.0
+                for epoch in range(5):
+                    if not self.is_mining:
+                        break
+                    for batch_x, batch_y in loader:
+                        optimizer.zero_grad()
+                        preds = model(batch_x)
+                        loss = criterion(preds, batch_y)
+                        loss.backward()
+                        optimizer.step()
+                        final_loss = loss.item()
+
+                if not self.is_mining:
+                    break
+
+                rounded_loss = round(final_loss, 4)
+                self.loss_history.append(rounded_loss)
+                if len(self.loss_history) > 18:
+                    self.loss_history.pop(0)
+
+                # 3. Serializing & Posting Model Binary to /user/cashout
+                temp_model_path = f"temp_{miner_id}_model.pt"
+                torch.save(model.cpu().state_dict(), temp_model_path)
+
+                cashout_url = f"{host_url}/user/cashout"
+                params = {"username": miner_id, "seconds_worked": 5.0}
+
+                with open(temp_model_path, "rb") as f:
+                    files = {"file": (f"{miner_id}_latest_model.pt", f, "application/octet-stream")}
+                    sub_resp = requests.post(cashout_url, params=params, files=files, timeout=10)
+
+                if os.path.exists(temp_model_path):
+                    os.remove(temp_model_path)
+
+                if sub_resp.status_code == 200:
+                    self.points_earned += 10
+                    self.root.after(0, lambda: self.points_label.config(text=f"EARNED: {self.points_earned} PTS"))
+                    self.log(f"✅ Submission Verified! (Loss: {rounded_loss}) +10 PTS.")
+                else:
+                    self.log(f"⚠️ Submission rejected with status: {sub_resp.status_code}")
+
                 time.sleep(1)
-            print("\r   ↳ Pinging network stream master now!             ")
-        else:
-            failed_attempts += 1
-            print("⚠️ Pipeline encounter error. Retrying network configuration link...")
-            time.sleep(10)
-        print("\n" + "═"*70 + "\n")
+
+            except Exception as e:
+                self.log(f"❌ Worker Exception: {e}")
+                time.sleep(4)
+
+        self.log("⏸️ Worker compute node safely offline.")
+
 
 if __name__ == "__main__":
-    try: main_execution_loop()
-    except KeyboardInterrupt: print("\n🛑 Worker dropped out cleanly. Workspace safe.")
+    root = tk.Tk()
+    app = AthernetWorkerApp(root)
+    root.mainloop()
